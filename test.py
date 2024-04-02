@@ -19,8 +19,20 @@ y = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 model.set_dataset(X, y)
 
 chromosome, fitness = model.population[0]
-prediction = model.predict(np.array([1]), chromosome)
+prediction = model.predict(np.array([1, 1]), chromosome)
 print(prediction)
 
-history = model.fit(10)
+history = model.fit(1)
+print(model.generation)
+history = model.fit(1)
+print(model.generation)
+history = model.fit(2)
+print(model.generation)
 print(history)
+print(model.population[10])
+
+prediction = model.predict(np.array([1, 1]), model.best[0][0])
+print(prediction)
+
+prediction = model.predict(np.array([1, 2]), model.best[0][0])
+print(prediction)

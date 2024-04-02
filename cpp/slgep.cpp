@@ -53,6 +53,9 @@ public:
 	int terminal_num;				// Current number of terminals
 	int function_num;				// Total function numbers including the ADFs
 
+	int generation;					// Initialize generation number
+	std::vector<std::vector<double>> history; // The training error history
+
 	CHROMOSOME best_chromosome;		// The chromosome with best fitness
 
 	std::vector<std::vector<double>> inputs; // Dataset features
@@ -61,6 +64,8 @@ public:
 	SLGEP(int terminal_num) {
 		this->terminal_num = terminal_num; // The number of features
 
+		generation = 0;
+
 		L_terminal = 10000;
 		L_input = 20000;							
 		base_function_num = 8;						
@@ -68,30 +73,31 @@ public:
 	}
 
 	std::vector<std::vector<double>> fit(int generations) {
-		best_chromosome = population[0];
+		if (this->generation == 0) {
+			best_chromosome = population[0];
+			// Initialize the history matrix
+			history.push_back(std::vector<double>(POPSIZE));
 
-		auto history = std::vector<std::vector<double>>();
-		// Initialize the history matrix
-		history.push_back(std::vector<double>(POPSIZE));
-
-		// Update initial chromosomes fitness
-		for (int i = 0; i < POPSIZE; i++) {
-			this->compute_chromosome_fitness(&population[i]);
-			// Add to history
-			history[0][i] = population[i].fitness;
-			// Best chromosome
-			if (population[i].fitness < best_chromosome.fitness) {
-				best_chromosome = population[i];
+			// Update initial chromosomes fitness
+			for (int i = 0; i < POPSIZE; i++) {
+				this->compute_chromosome_fitness(&population[i]);
+				// Add to history
+				history[0][i] = population[i].fitness;
+				// Best chromosome
+				if (population[i].fitness < best_chromosome.fitness) {
+					best_chromosome = population[i];
+				}
 			}
 		}
 		
+		int cur_generation = this->generation;
 		// Start evolution process
-		int generation = 1;
-		while (generation < generations) {
-			history.push_back(std::vector<double>(POPSIZE));
-			// Update fitness of the new population
+		while (this->generation < cur_generation + generations) {
+			this->generation++;
+			// Generate a new generation
 			its_a_new_generation();
 
+			history.push_back(std::vector<double>(POPSIZE));
 			// Select by comparing old and new generation fitness values
 			for (int i = 0; i < POPSIZE; i++) {
 				if (new_population[i].fitness < population[i].fitness) {
@@ -105,13 +111,11 @@ public:
 				history[generation][i] = population[i].fitness;
 			}
 			// Check for termination condition
-			if(best_chromosome.fitness < 1e-4) break;
+			// if(best_chromosome.fitness < 1e-4) break;
 			// Print stats every 100 generations
-			if(generation % 100 == 0) {
+			if(this->generation % 100 == 0) {
 				printf("generation %d\t%g\n", generation, best_chromosome.fitness);
 			}
-			// Next generation
-			generation++;
 		}
 		return history;
 	}
@@ -124,6 +128,10 @@ public:
 
 	std::vector<CHROMOSOME> get_population() {
 		return this->population;
+	}
+
+	int get_generation_number() {
+		return this->generation;
 	}
 
     void set_dataset(const std::vector<std::vector<double>>& X, const std::vector<double>& y) {
@@ -175,7 +183,7 @@ public:
 	}
 
 private:
-	std::vector<CHROMOSOME> population; 				 // The population
+	std::vector<CHROMOSOME> population; 				 // The local population
 	std::vector<CHROMOSOME> new_population; 			 // The generated population
 	LINK_COMP *link_root, link_comp[LINK_LENGTH];		 //the whole expression tree
 	LINK_COMP *sub_root[GSIZE], sub_comp[GSIZE][GNVARS]; //the sub expression tree
@@ -541,6 +549,7 @@ PYBIND11_MODULE(slgep, handle) {
 			py::array_t<CHROMOSOME> numpy_array(population.size(), population.data());
 			return numpy_array;
 		})
+		.def_property_readonly("generation", &SLGEP::get_generation_number)
 		// Methods
 		.def("set_dataset", &SLGEP::set_dataset)
 		.def("generate_random_population", [](SLGEP &self, int POPSIZE) {

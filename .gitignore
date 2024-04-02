@@ -161,4 +161,4 @@ cython_debug/
 
 .vscode
 pybind11/
-symbolic_regression_datasets/
+symbolic_regression_dataset/
