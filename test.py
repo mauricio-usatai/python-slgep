@@ -22,6 +22,9 @@ chromosome, fitness = model.population[0]
 prediction = model.predict(np.array([1, 1]), chromosome)
 print(prediction)
 
+history = model.compute_initial_fitness()
+print(history)
+print(model.generation)
 history = model.fit(1)
 print(model.generation)
 history = model.fit(1)

@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <random>
 #include <tuple>
 #include <vector>
 #include <math.h>
@@ -11,24 +13,27 @@
 namespace py = pybind11;
 
 // Constants
-#define H	    10		// Head length of the main program
-#define T	    (H+1)	// Tail length of the main program   (the maximum arities of all functions is 2)
-#define GSIZE 	2		// Number of ADFs
-#define GH		3		// Head length of ADFs
-#define GT		(GH+1)	// Tail length of ADFs
-#define GNVARS	(GH+GT)	
-#define NVARS	(H+T + GSIZE *(GH+GT))	// Chromosome length
+#define H       10      // Head length of the main program
+#define T       (H+1)   // Tail length of the main program   (the maximum arities of all functions is 2)
+#define GSIZE   2       // Number of ADFs
+#define GH      3       // Head length of ADFs
+#define GT      (GH+1)  // Tail length of ADFs
+#define GNVARS  (GH+GT)
+#define NVARS   (H+T + GSIZE *(GH+GT))  // Chromosome length
 
-#define MAX_SIBLING 20  			// The maximum sibling for each node
-#define	LINK_LENGTH	(NVARS * 20)	// Add enough to save all necessary node
-#define MAXINPUTS	1000			// Maximum input-output pairs of each problem
+#define MAX_SIBLING 20              // The maximum sibling for each node
+#define	LINK_LENGTH (NVARS * 20)    // Add enough to save all necessary node
+#define MAXINPUTS   1000            // Maximum input-output pairs of each problem
 
-#define MAXIMUM_ELEMENTS 100		// MAXIMUM_ELEMENTS > function_num && MAXIMUM_ELEMENTS > terminal_num
+#define MAXIMUM_ELEMENTS 100        // MAXIMUM_ELEMENTS > function_num && MAXIMUM_ELEMENTS > terminal_num
+
+#define INITIAL_FITNESS 1e10        // The initial fitness of chromosomes
 
 // Structs
 typedef struct {
 	int gene[NVARS];
 	double fitness;
+	int remote;
 } CHROMOSOME;
 
 struct LINK_COMP {
@@ -61,8 +66,10 @@ public:
 	std::vector<std::vector<double>> inputs; // Dataset features
 	std::vector<double> targets;			 // Dataset target
 
-	SLGEP(int terminal_num) {
-		this->terminal_num = terminal_num; // The number of features
+	SLGEP(int features_num, int popsize, int random_seed) {
+		srand(random_seed);
+
+		this->terminal_num = features_num; // The number of features
 
 		generation = 0;
 
@@ -70,26 +77,32 @@ public:
 		L_input = 20000;							
 		base_function_num = 8;						
 		function_num = base_function_num + GSIZE; 	
+
+		POPSIZE = popsize;
+		// Adjust population vectors size for POPSIZE
+		population.resize(POPSIZE);
+		new_population.resize(POPSIZE);
+		remote_population.resize(POPSIZE);
+	}
+
+	std::vector<std::vector<double>> compute_fitness_of_initial_population() {
+		best_chromosome = population[0];
+		// Initialize the history matrix
+		history.push_back(std::vector<double>(POPSIZE));
+		// Update initial chromosomes fitness
+		for (int i = 0; i < POPSIZE; i++) {
+			this->compute_chromosome_fitness(&population[i]);
+			// Add to history
+			history[0][i] = population[i].fitness;
+			// Best chromosome
+			if (population[i].fitness < best_chromosome.fitness) {
+				best_chromosome = population[i];
+			}
+		}
+		return history;
 	}
 
 	std::vector<std::vector<double>> fit(int generations) {
-		if (this->generation == 0) {
-			best_chromosome = population[0];
-			// Initialize the history matrix
-			history.push_back(std::vector<double>(POPSIZE));
-
-			// Update initial chromosomes fitness
-			for (int i = 0; i < POPSIZE; i++) {
-				this->compute_chromosome_fitness(&population[i]);
-				// Add to history
-				history[0][i] = population[i].fitness;
-				// Best chromosome
-				if (population[i].fitness < best_chromosome.fitness) {
-					best_chromosome = population[i];
-				}
-			}
-		}
-		
 		int cur_generation = this->generation;
 		// Start evolution process
 		while (this->generation < cur_generation + generations) {
@@ -120,6 +133,10 @@ public:
 		return history;
 	}
 
+	std::vector<std::vector<double>> get_history() {
+		return this->history;
+	}
+
 	std::vector<CHROMOSOME> get_best_chromosome() {
 		std::vector<CHROMOSOME> best;
 		best.push_back(this->best_chromosome);
@@ -130,6 +147,10 @@ public:
 		return this->population;
 	}
 
+	std::vector<CHROMOSOME> get_remote_population() {
+		return this->remote_population;
+	}
+
 	int get_generation_number() {
 		return this->generation;
 	}
@@ -138,7 +159,7 @@ public:
 		int _size = X[0].size();
 		if (_size != terminal_num) {
 			throw std::invalid_argument(
-				"Dimensions does not match. Expecting (N, " + std::to_string(terminal_num) + ") "
+				"Dimensions do not match. Expecting (N, " + std::to_string(terminal_num) + ") "
 				"but got (N, " + std::to_string(_size) + ")"
 			);
 		}
@@ -146,12 +167,92 @@ public:
         targets = y;
     }
 
-	void generate_random_population(int POPSIZE_) {
-		this->POPSIZE = POPSIZE_;
+	void select_from_local_and_remote_populations(int shuffling_method, int selection_method, int aggregation_method) {
+		int average_fitness = 0;
+		auto sort_descending = [](const CHROMOSOME& a, const CHROMOSOME& b) {
+			return a.fitness > b.fitness;
+		};
+		// Different methods for performing selection
+		if (shuffling_method == 0) { // ** Random selection
+			std::random_device rd;
+    		std::mt19937 g(rd());
+    		std::shuffle(remote_population.begin(), remote_population.end(), g);
+		} else if (shuffling_method == 1) { // ** Select by the most fit
+			// Sort local and remote population by fitness descending
+			std::sort(population.begin(), population.end(), sort_descending);
+			std::sort(remote_population.begin(), remote_population.end(), sort_descending);
+		}
+		// Update current population
+		switch (selection_method) {
+		case 0: // ** Overide
+			for (int i = 0; i < POPSIZE; i++) {
+				population[i] = remote_population[i];
+			}
+			break;
+		case 1: // ** Best fitness
+			for (int i = 0; i < POPSIZE; i++) {
+				if (remote_population[i].fitness < population[i].fitness) {
+					population[i] = remote_population[i];
+				}
+			}
+			break;
+		case 2: // ** Welcome Brother (Replace if better)
+			for (int i = 0; i < POPSIZE; i++) {
+				if (randval(0,1) < 0.1) {
+					if (remote_population[i].fitness < population[i].fitness) {
+						population[i] = remote_population[i];
+					}
+				}
+			}
+			break;
+		case 3: // ** Replace worst with remote worst if average is better
+			for (int i = 0; i < int(POPSIZE * 0.1); i++) {
+				average_fitness = (population[i].fitness + remote_population[i].fitness) / 2;
+				if (average_fitness < population[i].fitness) { // The remote chromosome is better
+					population[i] = remote_population[i];
+					this->compute_chromosome_fitness(&population[i]);
+				}
+			}
+			break;
+		default:
+			// Pass
+			break;
+		}
+		// Aggregate local and remote chromosomes
+		switch (aggregation_method) {
+		case 0: // ** Average aggregation
+			for (int i = 0; i < POPSIZE; i++) {
+				average_fitness = (population[i].fitness + remote_population[i].fitness) / 2;
+				if (average_fitness < population[i].fitness) { // The remote chromosome is better
+					population[i] = remote_population[i];
+					this->compute_chromosome_fitness(&population[i]);
+				}
+			}
+			break;
+		default:
+			// Pass
+			break;
+		}		
+	}
 
-		population.resize(POPSIZE);
-		new_population.resize(POPSIZE); // Resize new generations array
+	void set_remote_population(const std::vector<std::vector<int>>& remote_population, const std::vector<double>& remote_fitness_values) {
+		if (remote_population.size() != POPSIZE) {
+			throw std::invalid_argument(
+				"Population size do not match. Expecting " + std::to_string(POPSIZE)
+			);
+		}
 
+		// Transform into array of CHROMOSOMES
+		for (int i = 0; i < POPSIZE; i++) {
+			for (int j = 0; j < NVARS; j++) {
+				this->remote_population[i].gene[j] = remote_population[i][j];
+			}
+			this->remote_population[i].remote = 1;
+			this->remote_population[i].fitness = remote_fitness_values[i];
+		}
+	}
+
+	void generate_random_population() {
 		int i, j, k;
 		// Delimit main program and ADF headers and tails by
 		// using different numbers
@@ -168,8 +269,9 @@ public:
 		for (i = 0; i < POPSIZE; i++) {
 			for (k = 0; k < NVARS; k++) {
 				rand_set_value(k, &population[i].gene[k]);
-				population[i].fitness = 1e10;
 			}
+			population[i].fitness = INITIAL_FITNESS;
+			population[i].remote = 0; // Mark chromosome as local
 		}
 	}
 
@@ -183,23 +285,24 @@ public:
 	}
 
 private:
-	std::vector<CHROMOSOME> population; 				 // The local population
-	std::vector<CHROMOSOME> new_population; 			 // The generated population
-	LINK_COMP *link_root, link_comp[LINK_LENGTH];		 //the whole expression tree
-	LINK_COMP *sub_root[GSIZE], sub_comp[GSIZE][GNVARS]; //the sub expression tree
+	std::vector<CHROMOSOME> population;                  // The local population
+	std::vector<CHROMOSOME> new_population;              // The generated population
+	std::vector<CHROMOSOME> remote_population;           // The population received from peer
+	LINK_COMP *link_root, link_comp[LINK_LENGTH];        // The whole expression tree
+	LINK_COMP *sub_root[GSIZE], sub_comp[GSIZE][GNVARS]; // The sub expression tree
 
-	int gene_type_flag[NVARS];							 // The type of each bit in the chromosome
+	int gene_type_flag[NVARS];                           // The type of each bit in the chromosome
 	double sub_sibling_value[MAX_SIBLING];
 
 	double t2;
 	double current_value, sub_current_value;
 	std::vector<double> training_input;
 
-	double FQ;										// In the main heads of population, the proportion of bits being function symbols
-	double function_freq[MAXIMUM_ELEMENTS];			// In the main parts of population, the frequency of each function symbol
-	double terminal_freq[MAXIMUM_ELEMENTS];			// In the main parts of population, the frequency of each terminal symbol
-	double terminal_probability[MAXIMUM_ELEMENTS];	// Store the selection probability of each terminal
-	double function_probability[MAXIMUM_ELEMENTS];	// Store the selection probability of each function
+	double FQ;                                      // In the main heads of population, the proportion of bits being function symbols
+	double function_freq[MAXIMUM_ELEMENTS];         // In the main parts of population, the frequency of each function symbol
+	double terminal_freq[MAXIMUM_ELEMENTS];         // In the main parts of population, the frequency of each terminal symbol
+	double terminal_probability[MAXIMUM_ELEMENTS];  // Store the selection probability of each terminal
+	double function_probability[MAXIMUM_ELEMENTS];  // Store the selection probability of each function
 
 	void compute_chromosome_fitness(CHROMOSOME *chromosome) {
 		double prediction;
@@ -230,7 +333,7 @@ private:
 			CR = randval(0,1);
 
 			// Randomly chose two vector out of the population for mutation
-			do {r1 = rand() % POPSIZE;} while(r1 == i); 			// Dont mutate the vector with itself
+			do {r1 = rand() % POPSIZE;} while(r1 == i);             // Dont mutate the vector with itself
 			do {r2 = rand() % POPSIZE;} while(r2 == r1 || r2 == i); // Need a third vector
 
 			k = rand() % NVARS;
@@ -304,7 +407,7 @@ private:
 
 		// Build the expression tree for the main program
 		link_root = &link_comp[0];
-		if(link_root->value < function_num){
+		if (link_root->value < function_num) {
 			do{
 				//find an op type item
 				do{
@@ -404,21 +507,21 @@ private:
 	}
 
 	void compute_sub_rule(const struct LINK_COMP * node) {
-		if(node->value >= L_input){
+		if (node->value >= L_input) {
 			// If the node is an input then read data from the input vector, i.e., sub_sibling_value[...];
 			sub_current_value = sub_sibling_value[node->value - L_input];
-		}else{
+		} else {
 			// First compute the left child of the node.
 			double t1;
 			compute_sub_rule(node->siblings[0]);
 
 			t1 = sub_current_value;
 			//then compute the right child of the node if the node contain right child
-			if(node->value < 4){  // note that the first 4 functions have 2 children
+			if (node->value < 4) {  // note that the first 4 functions have 2 children
 				compute_sub_rule(node->siblings[1]);
 				t2 = sub_current_value;
 			}
-			switch(node->value){
+			switch (node->value) {
 			case 0: //+ 			
 				sub_current_value = t1 + t2; break;
 			case 1: //-
@@ -426,7 +529,7 @@ private:
 			case 2: //*
 				sub_current_value = t1 * t2; break;
 			case 3: // /
-				 if(fabs(t2) <  1e-20) sub_current_value = 0;else sub_current_value = t1 / t2; break;
+				 if (fabs(t2) < 1e-20) sub_current_value = 0;else sub_current_value = t1 / t2; break;
 			case 4: //sin
 				 sub_current_value = sin(t1); break;
 			case 5: //cos
@@ -434,7 +537,7 @@ private:
 			case 6: //exp
 				 if(t1 < 20) sub_current_value = exp(t1); else sub_current_value = exp(20.); break;
 			case 7: //log
-				 if(fabs(t1) <  1e-20) sub_current_value = 0; else sub_current_value = log(fabs(t1)); break;
+				 if (fabs(t1) <  1e-20) sub_current_value = 0; else sub_current_value = log(fabs(t1)); break;
 			default: printf("unknow function\n");
 			}
 		}
@@ -443,9 +546,8 @@ private:
 	int choose_a_terminal() {
 		int i, j;
 		double p = randval(0,1);
-		for(i = 0; i < terminal_num - 1; i++){
-			if(p < terminal_probability[i])
-				break;
+		for (i = 0; i < terminal_num - 1; i++) {
+			if (p < terminal_probability[i]) break;
 		}
 		return L_terminal+i;
 	}
@@ -513,14 +615,14 @@ private:
 
 	void biasly_set_value(int I, int*x) {
 		// Here we only consider the main parts, while the sub-gene part are also randomly setting, so as to import population diversity
-		switch(gene_type_flag[I]){
+		switch (gene_type_flag[I]) {
 		case 0: 
 			if(randval(0, 1) < FQ) *x = choose_a_function();
 			else *x = choose_a_terminal();
 			break;
 		case 1: *x = choose_a_terminal(); break;
 		case 2: 
-			if(rand()%2==0) *x = rand()%(base_function_num);
+			if (rand()%2==0) *x = rand()%(base_function_num);
 			else *x = L_input + rand()%(2); 
 			break;
 		case 3: *x = L_input + rand()%(2);break;
@@ -533,14 +635,19 @@ private:
 PYBIND11_MODULE(slgep, handle) {
 	handle.doc() = "Dont forget to update the docs";
 	// Initialize function
-	PYBIND11_NUMPY_DTYPE(CHROMOSOME, gene, fitness);
+	PYBIND11_NUMPY_DTYPE(CHROMOSOME, gene, fitness, remote);
 	// Classes	
 	py::class_<SLGEP>(handle, "C_SLGEP")
 		// Constructor
-		.def(py::init<int>())
+		.def(py::init<int, int, int>())
 		// Properties
 		.def_property_readonly("population", [](SLGEP &self) {
 			std::vector<CHROMOSOME> population = self.get_population();
+			py::array_t<CHROMOSOME> numpy_array(population.size(), population.data());
+			return numpy_array;
+		})
+		.def_property_readonly("remote_population", [](SLGEP &self) {
+			std::vector<CHROMOSOME> population = self.get_remote_population();
 			py::array_t<CHROMOSOME> numpy_array(population.size(), population.data());
 			return numpy_array;
 		})
@@ -549,11 +656,23 @@ PYBIND11_MODULE(slgep, handle) {
 			py::array_t<CHROMOSOME> numpy_array(population.size(), population.data());
 			return numpy_array;
 		})
+		.def_property_readonly("history", [](SLGEP &self) {
+			py::array out = py::cast(self.get_history());
+			return out;
+		})
 		.def_property_readonly("generation", &SLGEP::get_generation_number)
 		// Methods
 		.def("set_dataset", &SLGEP::set_dataset)
-		.def("generate_random_population", [](SLGEP &self, int POPSIZE) {
-			self.generate_random_population(POPSIZE);
+		.def("set_remote_population", &SLGEP::set_remote_population)
+		.def("select_from_local_and_remote_populations", [](SLGEP &self, int shuffling_method, int selection_method, int aggregation_method) {
+			self.select_from_local_and_remote_populations(shuffling_method, selection_method, aggregation_method);
+		})
+		.def("generate_random_population", [](SLGEP &self) {
+			self.generate_random_population();
+		})
+		.def("fit_initial_population", [](SLGEP &self) {
+			py::array out = py::cast(self.compute_fitness_of_initial_population());
+			return out;
 		})
 		.def("fit", [](SLGEP &self, int generations) {
 			py::array out = py::cast(self.fit(generations));
